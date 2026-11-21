@@ -154,6 +154,9 @@ textarea.inp{min-height:140px;resize:vertical;font-family:ui-monospace,Consolas,
   .line .pick{grid-area:p}.line .qty{grid-area:q;max-width:150px}.line .lc{grid-area:c}.line .rm{grid-area:x;align-self:start}
 }
 .lines-foot{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.sugi{display:flex;gap:8px;align-items:center;width:100%;border:1px solid var(--border);background:var(--surface-2);border-radius:8px;padding:7px 10px;margin-top:5px;cursor:pointer;text-align:left;font-size:14px}
+.sugi:hover{border-color:var(--accent)}
+.sugi .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .empty{padding:22px;text-align:center;color:var(--muted);border:1px dashed var(--border-strong);border-radius:10px;font-size:14px}
 
 /* ---------- result ---------- */
@@ -588,7 +591,9 @@ function renderNav(){
   var miss = S.products.filter(function(p){ return !(p.gia > 0); }).length;
   $('#brand-s').textContent = S.products.length + ' mã hàng · ' + S.combos.length + ' combo' + (miss ? ' · ' + miss + ' mã thiếu giá' : '');
 }
-function go(tab){ S.ui.tab = tab; renderNav(); renderTab(); window.scrollTo(0, 0); saveSoon(); }
+function go(tab){
+  if (S.ui.tab === 'combo' && tab !== 'combo' && S.draft && isDirty() && named(S.draft) && hasContent(S.draft) && !(!S.draft.id && dupOf(S.draft))) upsertDraft();
+  S.ui.tab = tab; renderNav(); renderTab(); window.scrollTo(0, 0); saveSoon(); }
 function renderTab(){
   var v = $('#view'); v.onclick = v.oninput = v.onchange = v.onkeydown = null;
   var f = {combo: viewCombo, sp: viewSp, list: viewList, data: viewData, params: viewParams, help: viewHelp}[S.ui.tab] || viewCombo;
@@ -621,9 +626,18 @@ function openPicker(o){
       return '<button class="pitem ' + (i === act ? 'act' : '') + '" data-i="' + i + '"><span class="pi-m">' + esc(p.ma) + '</span><span class="pi-n">' + esc(p.ten) +
         (p.xop ? ' <span class="chip info">' + esc(p.xop) + '</span>' : '') + (p.pl && p.pl !== 'Hàng hóa' ? ' <span class="chip">' + esc(p.pl) + '</span>' : '') + '</span>' +
         '<span class="pi-p">' + (p.gia > 0 ? fmt(p.gia) + 'đ<br><span class="faint">/' + esc(p.dvt || 'đv') + '</span>' : '<span class="chip bad">Thiếu giá</span>') + '</span></button>';
-    }).join('') : '<div class="empty">Không tìm thấy. Kiểm tra lại mã/tên, hoặc thêm sản phẩm mới ở tab “Sản phẩm”.</div>';
+    }).join('') : !S.products.length ? '<div class="empty"><b>App chưa có dữ liệu sản phẩm.</b><br>Vào tab <b>Sản phẩm</b> → <b>Khôi phục từ file sao lưu</b> (file .json gửi từ máy tính) hoặc <b>Nhập từ file Excel</b>.<br><br><button class="btn pri" data-godata>Đến tab Sản phẩm</button></div>'
+      : '<div class="empty">Không tìm thấy “' + esc(m.$('#pq').value) + '”' + (mode === 'goods' && S.products.some(function(p){ var h = norm(p.ma + ' ' + p.ten + ' ' + (p.alias || '')); return p.pl === 'Hộp' && terms.length && terms.every(function(t){ return h.indexOf(t) >= 0; }); }) ? ' trong danh sách sản phẩm (đây là mã hộp – chọn ở mục <b>Hộp carton</b>)' : '') + '.<br>Thử gõ ít chữ hơn (VD chỉ “chan ga 26” hoặc “G001”), hoặc thêm sản phẩm mới:<br><br><button class="btn" data-newp>' + ic('plus') + 'Thêm sản phẩm mới</button></div>';
   }
   function pick(i){ var p = shown[i]; if (!p) return; m.close(); o.onPick(p); }
+  m.$('#pl').addEventListener('click', function(e){
+    if (e.target.closest('[data-godata]')){ m.close(); go('data'); return; }
+    if (e.target.closest('[data-newp]')){
+      var raw = m.$('#pq').value.trim(), init = /^[A-Za-z]{2,}[-\w]*\d[\w-]*$/.test(raw) ? {ma: raw.toUpperCase()} : {ten: raw};
+      if (mode === 'box') init.pl = 'Hộp';
+      m.close(); editProduct(null, function(t){ if (t && (mode !== 'goods' || t.pl !== 'Hộp')) o.onPick(t); }, init);
+    }
+  });
   m.$('#pq').addEventListener('input', function(){ act = 0; draw(); });
   m.$('#pq').addEventListener('keydown', function(e){
     if (e.key === 'ArrowDown'){ act = Math.min(shown.length - 1, act + 1); draw(); e.preventDefault(); }
@@ -653,10 +667,51 @@ function isDirty(){
   var s = S.combos.filter(function(c){ return c.id === d.id; })[0];
   return !s || sig(s) !== sig(d);
 }
-function dirtyText(){ var d = S.draft; if (!d) return ''; if (!d.id) return isDirty() ? 'Chưa lưu vào Danh sách' : 'Combo mới'; return isDirty() ? 'Có thay đổi chưa lưu' : 'Đã lưu'; }
+function hasContent(d){ var x = cleanCombo(d); return !!(x.items.length || x.gia); }
+function named(d){ return !!String(d && d.ten || '').trim(); }
+function dirtyText(){
+  var d = S.draft; if (!d) return '';
+  if (!d.id){ if (!named(d)) return hasContent(d) ? '⚠ Nhập tên combo để tự lưu vào Danh sách' : 'Combo mới – nhập tên combo, chọn sản phẩm, hộp và giá bán'; if (dupOf(d)) return '⚠ Trùng tên với combo đã có – mở combo đó, hoặc bấm “Lưu combo” nếu muốn lưu thành combo riêng'; return hasContent(d) ? 'Đang lưu…' : 'Thêm sản phẩm hoặc giá bán để tự lưu vào Danh sách'; }
+  return isDirty() ? (named(d) ? 'Đang lưu…' : '⚠ Tên combo đang trống – chưa lưu thay đổi') : '✓ Đã tự lưu vào Danh sách';
+}
+/* lưu combo đang soạn vào Danh sách (thêm mới hoặc cập nhật) */
+function upsertDraft(){
+  var d = S.draft, now = Date.now(), c = cleanCombo(d), idx = -1;
+  S.combos.forEach(function(x, i){ if (x.id === d.id) idx = i; });
+  if (!d.id || idx < 0){ c.id = d.id = d.id || uid(); c.created = now; S.combos.push(c); }
+  else { c.created = S.combos[idx].created || now; if (S.combos[idx].sent) c.sent = S.combos[idx].sent; S.combos[idx] = c; }
+  c.updated = now; save(); renderNav(); return c;
+}
+var autoSave = debounce(function(){
+  var d = S.draft; if (!d || !named(d) || !hasContent(d) || !isDirty()) return;
+  var isNew = !d.id; if (isNew && dupOf(d)) return;
+  upsertDraft();
+  var dt = $('#dirty'); if (dt) dt.textContent = dirtyText();
+  var h = $('.page-h h1'); if (h && S.ui.tab === 'combo') h.textContent = 'Sửa combo đã lưu';
+  if (isNew) toast('Đã tự lưu “' + d.ten.trim() + '” vào Danh sách', 'ok');
+}, 700);
+/* trước khi rời combo đang soạn: tự lưu nếu được, hỏi nếu chưa có tên */
+function flushDraft(){
+  var d = S.draft; if (!d || !isDirty()) return true;
+  if (named(d) && hasContent(d) && !(!d.id && dupOf(d))){ upsertDraft(); return true; }
+  if (!hasContent(d)) return true;
+  return confirm('Combo đang soạn chưa có tên nên chưa được lưu vào Danh sách. Bỏ combo đó?');
+}
 function openCombo(c){
-  if (isDirty() && S.draft && S.draft.id !== c.id && !confirm('Combo đang soạn có thay đổi chưa lưu. Bỏ thay đổi đó và mở combo “' + c.ten + '”?')) return;
+  if (S.draft && S.draft.id !== c.id && !flushDraft()) return;
   S.draft = withKeys(c); go('combo');
+}
+function nameSugHTML(d){
+  if (d.id) return '';
+  var q = norm(d.ten); if (q.length < 2) return '';
+  var terms = q.split(' ');
+  var rank = function(c){ var n = norm(c.ten); return n === q ? 0 : n.indexOf(q) === 0 ? 1 : n.indexOf(q) > 0 ? 2 : 3; };
+  var m = S.combos.filter(function(c){ var n = norm(c.ten); return terms.every(function(t){ return n.indexOf(t) >= 0; }); })
+    .sort(function(a, b){ return rank(a) - rank(b) || a.ten.length - b.ten.length; }).slice(0, 6);
+  if (!m.length) return '';
+  var exact = m.some(function(c){ return norm(c.ten) === q; });
+  return '<div class="small" style="margin:8px 0 2px;color:var(' + (exact ? '--warn' : '--muted') + ')">' + (exact ? '⚠ Đã có combo cùng tên trong Danh sách – bấm để mở:' : 'Combo đã có trong Danh sách (bấm để mở):') + '</div>' +
+    m.map(function(c){ var r = calc(c); return '<button class="sugi" data-open="' + c.id + '"><span class="grow">' + esc(c.ten) + '</span><span class="faint small">' + esc(fmtDate(c.ngay)) + '</span>' + statusChip(r.status) + '<span class="chip acc">Mở</span></button>'; }).join('');
 }
 
 function lineCls(st){ return !st || st === 'OK' ? '' : (st === 'THIẾU GIÁ nhập' || st === 'Mã không có trong danh mục' || st === 'Trùng mã trong combo') ? 'bad' : 'warn'; }
@@ -696,9 +751,10 @@ function viewCombo(v){
   v.innerHTML =
     '<div class="page-h"><div><h1>' + (d.id ? 'Sửa combo đã lưu' : 'Tính giá cost combo') + '</h1><p id="dirty">' + esc(dirtyText()) + '</p></div><div class="spacer"></div>' +
     '<div class="row"><button class="btn" data-a="new">' + ic('file') + 'Combo mới</button><button class="btn" data-a="paste">' + ic('paste') + 'Dán từ email/Excel</button><button class="btn pri" data-a="save">' + ic('save') + 'Lưu combo</button></div></div>' +
+    (S.products.length ? '' : '<div class="note warn row" style="margin-bottom:14px"><span style="flex:1;min-width:200px"><b>App chưa có dữ liệu sản phẩm & giá nhập</b> nên chưa tìm được sản phẩm (thường gặp khi mới cài trên điện thoại). Vào tab Sản phẩm → <b>Khôi phục từ file sao lưu</b> hoặc <b>Nhập từ file Excel</b>.</span><button class="btn sm pri" data-a="godata">Nạp dữ liệu</button></div>') +
     '<div class="grid2"><div class="stack">' +
       '<div class="card"><div class="card-h"><h2 class="grow">Thông tin combo</h2></div><div class="card-b"><div class="fields">' +
-        '<div class="f full"><label for="f-ten">Tên combo</label><input id="f-ten" class="inp" data-f="ten" value="' + esc(d.ten) + '" placeholder="VD: COMBO 20 chân gà rút xương PL1"></div>' +
+        '<div class="f full"><label for="f-ten">Tên combo</label><input id="f-ten" class="inp" data-f="ten" value="' + esc(d.ten) + '" placeholder="VD: COMBO 20 chân gà rút xương PL1" autocomplete="off"><div id="nsug">' + nameSugHTML(d) + '</div></div>' +
         '<div class="f"><label>Ngày yêu cầu</label><input class="inp" type="date" data-f="ngay" value="' + esc(d.ngay || '') + '"></div>' +
         '<div class="f"><label>Phòng ban / người yêu cầu</label><input class="inp" data-f="phongban" value="' + esc(d.phongban || '') + '" placeholder="Vận hành sàn"></div>' +
         '<div class="f"><label>Kênh bán</label><select class="inp" data-f="kenh">' + kenhOpts(d.kenh) + '</select></div>' +
@@ -721,7 +777,7 @@ function viewCombo(v){
 
   v.oninput = function(e){
     var t = e.target;
-    if (t.dataset.f){ var f = t.dataset.f; d[f] = ('money' in t.dataset) ? numOrNull(t.value) : t.value; if (f === 'kenh') S.ui.lastKenh = t.value; changed(); }
+    if (t.dataset.f){ var f = t.dataset.f; d[f] = ('money' in t.dataset) ? numOrNull(t.value) : t.value; if (f === 'kenh') S.ui.lastKenh = t.value; if (f === 'ten'){ var ns = $('#nsug'); if (ns) ns.innerHTML = nameSugHTML(d); } changed(); }
     else if ('q' in t.dataset){ var it = itemOf(t); if (it){ it.sl = t.value; changed(); } }
   };
   v.onchange = function(e){
@@ -733,6 +789,8 @@ function viewCombo(v){
   v.onclick = function(e){
     var sb = e.target.closest('[data-seg] button');
     if (sb){ var seg = sb.parentElement.dataset.seg; d[seg] = sb.dataset.v === '1'; $$('button', sb.parentElement).forEach(function(b){ b.classList.toggle('on', b === sb); }); changed(); return; }
+    var so = e.target.closest('[data-open]');
+    if (so){ var oc = S.combos.filter(function(x){ return x.id === so.dataset.open; })[0]; if (oc) openCombo(oc); return; }
     var b = e.target.closest('[data-a],[data-act]'); if (!b) return;
     var a = b.dataset.a || b.dataset.act, it = itemOf(b);
     if (a === 'qinc' || a === 'qdec'){ var q = parseNum(it.sl); q = isNum(q) ? q : 0; q = Math.max(0, q + (a === 'qinc' ? 1 : -1)); it.sl = q; var inp = $('#ln-' + it.k + ' [data-q]'); if (inp) inp.value = q; changed(); }
@@ -754,14 +812,17 @@ function viewCombo(v){
     else if (a === 'addbox'){ var bp = boxProducts()[0]; if (bp){ d.items.push({k: uid(), ma: bp.ma, sl: 1}); relines(); changed(); } }
     else if (a === 'paste') openPaste();
     else if (a === 'save') saveDraft();
-    else if (a === 'new'){ if (isDirty() && !confirm('Combo đang soạn có thay đổi chưa lưu. Bỏ và tạo combo mới?')) return; S.draft = withKeys(newCombo()); saveSoon(); renderTab(); setTimeout(function(){ var i = $('#f-ten'); if (i) i.focus(); }, 30); }
+    else if (a === 'new'){ if (!flushDraft()) return; S.draft = withKeys(newCombo()); saveSoon(); renderTab(); setTimeout(function(){ var i = $('#f-ten'); if (i) i.focus(); }, 30); }
+    else if (a === 'godata') go('data');
     else if (a === 'tores'){ var el = $('#cres'); if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
     else resultAction(a, cleanCombo(d), calc(d), false);
   };
   function itemOf(el){ var w = el.closest('[data-k]'); if (!w) return null; var k = w.dataset.k; return d.items.filter(function(x){ return x.k === k; })[0]; }
   function relines(){ var r2 = calc(d); $('#glines').innerHTML = goodsHTML(r2); $('#boxes').innerHTML = boxesHTML(r2); }
-  function changed(){ paintCombo(calc(d)); saveSoon(); }
+  function changed(){ paintCombo(calc(d)); saveSoon(); autoSave(); }
+  autoSave();
 }
+function dupOf(d){ var nm = String(d.ten || '').trim().toLowerCase(); return nm ? S.combos.filter(function(c){ return c.id !== d.id && String(c.ten).trim().toLowerCase() === nm; })[0] : null; }
 function paintCombo(r){
   var d = S.draft;
   r.lines.forEach(function(l){
@@ -787,14 +848,9 @@ function mbarHTML(r){
 function saveDraft(){
   var d = S.draft;
   if (!String(d.ten || '').trim()){ toast('Nhập tên combo trước khi lưu', 'bad'); var i = $('#f-ten'); if (i) i.focus(); return; }
-  var nm = d.ten.trim().toLowerCase();
-  var dup = S.combos.filter(function(c){ return c.id !== d.id && String(c.ten).trim().toLowerCase() === nm; })[0];
+  var dup = dupOf(d);
   if (dup && !confirm('Đã có combo cùng tên “' + dup.ten + '” trong Danh sách. Vẫn lưu thành một combo riêng?')) return;
-  var now = Date.now(), c = cleanCombo(d), idx = -1;
-  S.combos.forEach(function(x, i){ if (x.id === d.id) idx = i; });
-  if (!d.id || idx < 0){ c.id = d.id = d.id || uid(); c.created = now; S.combos.push(c); }
-  else { c.created = S.combos[idx].created || now; if (S.combos[idx].sent) c.sent = S.combos[idx].sent; S.combos[idx] = c; }
-  c.updated = now; save(); renderNav();
+  var c = upsertDraft();
   var dt = $('#dirty'); if (dt) dt.textContent = dirtyText();
   var h = $('.page-h h1'); if (h) h.textContent = 'Sửa combo đã lưu';
   toast('Đã lưu “' + c.ten + '” vào Danh sách', 'ok');
@@ -1245,7 +1301,10 @@ function listData(){
   var all = S.combos.map(function(c, i){ return {c: c, i: i, r: calc(c)}; });
   var q = norm(lf.q);
   var f = all.filter(function(x){
-    if (q && norm(x.c.ten + ' ' + (x.c.phongban || '') + ' ' + (x.c.ghichu || '')).indexOf(q) < 0) return false;
+    if (q){
+      if (!x.h) x.h = norm(x.c.ten + ' ' + (x.c.phongban || '') + ' ' + (x.c.ghichu || '') + ' ' + fmtDate(x.c.ngay) + ' ' + (x.c.items || []).map(function(it){ var p = prod(it.ma); return it.ma + ' ' + (p ? p.ma + ' ' + p.ten : ''); }).join(' '));
+      if (!q.split(' ').every(function(t){ return x.h.indexOf(t) >= 0; })) return false;
+    }
     if (lf.st !== 'all' && x.r.status !== lf.st) return false;
     if (lf.m && String(x.c.ngay || '').slice(0, 7) !== lf.m) return false;
     return true;
@@ -1270,16 +1329,20 @@ function viewList(v){
   var cnt = {all: L.all.length}; L.all.forEach(function(x){ cnt[x.r.status] = (cnt[x.r.status] || 0) + 1; });
   var months = []; L.all.forEach(function(x){ var m = String(x.c.ngay || '').slice(0, 7); if (m && months.indexOf(m) < 0) months.push(m); }); months.sort().reverse();
   SEL.forEach(function(id){ if (!S.combos.some(function(c){ return c.id === id; })) SEL.delete(id); });
-  var target = SEL.size ? 'đã chọn (' + SEL.size + ')' : 'đang lọc (' + f.length + ')';
   v.innerHTML = '<div class="page-h"><div><h1>Danh sách combo đã tính</h1><p>Tương đương sheet KẾT QUẢ COMBO + TRẢ KẾT QUẢ SÀN. Kết quả tự tính lại khi đổi giá nhập / tham số.</p></div><div class="spacer"></div>' +
     '<div class="row"><button class="btn pri" data-a="cpvhs">' + ic('copy') + 'Copy trả kết quả sàn</button><button class="btn" data-a="cpgd">' + ic('copy') + 'Copy báo cáo GĐ</button><button class="btn" data-a="xlsx">' + ic('download') + 'Xuất Excel</button></div></div>' +
     '<div class="card"><div class="card-h"><div class="filters" style="flex:1">' +
-      '<input class="inp search" data-l="q" value="' + esc(lf.q) + '" placeholder="Tìm tên combo, phòng ban…">' +
+      '<input class="inp search" type="search" data-l="q" value="' + esc(lf.q) + '" placeholder="Tìm tên combo, mã/tên sản phẩm, ngày…" autocomplete="off">' +
       '<div class="seg" data-lst>' + [['all', 'Tất cả'], ['Đạt', 'Đạt'], ['Không đạt', 'Không đạt'], ['Thiếu dữ liệu', 'Thiếu DL'], ['Chưa có giá bán', 'Chưa giá']].map(function(s){ return '<button data-v="' + s[0] + '" class="' + (lf.st === s[0] ? 'on' : '') + '">' + s[1] + ' <span class="faint">' + (cnt[s[0]] || 0) + '</span></button>'; }).join('') + '</div>' +
       '<select class="inp" data-l="m"><option value="">Mọi tháng</option>' + months.map(function(m){ return '<option value="' + m + '"' + (lf.m === m ? ' selected' : '') + '>Tháng ' + m.slice(5) + '/' + m.slice(0, 4) + '</option>'; }).join('') + '</select>' +
       '<select class="inp" data-l="sort">' + [['new', 'Mới nhất'], ['old', 'Thứ tự nhập (STT)'], ['name', 'Tên A→Z'], ['pct', '% LN thấp → cao']].map(function(s){ return '<option value="' + s[0] + '"' + (lf.sort === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') + '</select>' +
-    '</div></div>' +
-    '<div class="card-b" style="padding:10px 16px;border-bottom:1px solid var(--border)"><div class="row small"><span class="muted">Các nút Copy / Xuất Excel áp dụng cho combo <b>' + target + '</b>.</span>' + (SEL.size ? '<button class="btn sm ghost" data-a="clrsel">Bỏ chọn</button>' : '') + '<span class="spacer"></span><button class="btn sm" data-a="new">' + ic('plus') + 'Combo mới</button></div></div>' +
+    '</div></div><div id="lbody"></div></div>';
+  function body(){
+    L = listData(); f = L.f;
+    var target = SEL.size ? 'đã chọn (' + SEL.size + ')' : (f.length === L.all.length ? 'tất cả (' + f.length + ')' : 'đang lọc (' + f.length + '/' + L.all.length + ')');
+    var filtered = !!(lf.q || lf.st !== 'all' || lf.m);
+    $('#lbody').innerHTML =
+    '<div class="card-b" style="padding:10px 16px;border-bottom:1px solid var(--border)"><div class="row small"><span class="muted">Các nút Copy / Xuất Excel áp dụng cho combo <b>' + target + '</b>.</span>' + (filtered ? '<button class="btn sm" data-a="clrf">' + ic('x') + 'Xoá bộ lọc</button>' : '') + (SEL.size ? '<button class="btn sm ghost" data-a="clrsel">Bỏ chọn</button>' : '') + '<span class="spacer"></span><button class="btn sm" data-a="new">' + ic('plus') + 'Combo mới</button></div></div>' +
     '<div class="ctable tbl-wrap tbl-b"><table class="t"><thead><tr><th><input type="checkbox" data-a="selall"' + (f.length && f.every(function(x){ return SEL.has(x.c.id); }) ? ' checked' : '') + '></th><th class="n">STT</th><th>Ngày</th><th>Tên combo</th><th class="n">Giá đề xuất</th><th>Kết quả</th><th class="n">% LN ròng</th><th class="n">Giá tối thiểu</th><th class="n">Giá KTT đề xuất</th><th class="n">Giá CEO chốt</th><th class="n">% LN giá chốt</th><th>Trả KQ</th><th></th></tr></thead><tbody>' +
       (f.length ? f.map(function(x){ var c = x.c, r = x.r; return '<tr class="click" data-id="' + c.id + '"><td><input type="checkbox" data-sel' + (SEL.has(c.id) ? ' checked' : '') + '></td><td class="n">' + (x.i + 1) + '</td><td>' + esc(fmtDate(c.ngay)) + '</td><td class="wrap"><b>' + esc(c.ten) + '</b><div class="small muted">' + esc(r.K.ten) + ' · ' + r.nGoods + ' dòng SP' + (c.phongban ? ' · ' + esc(c.phongban) : '') + (r.status === 'Thiếu dữ liệu' ? ' · <span style="color:var(--warn)">' + esc(ghiChu(r)) + '</span>' : '') + '</div></td>' +
         '<td class="n">' + fmt(c.gia) + '</td><td>' + statusChip(r.status) + '</td><td class="n">' + fmtP(r.pct) + '</td><td class="n">' + (r.giaMinNK ? 'K.khả thi' : fmt(r.giaMin)) + '</td><td class="n"><b>' + fmt(r.giaKTT) + '</b>' + (r.isKOL && r.giaKTT != null ? '<div class="small muted">KOL ' + fmt(r.kolLow) + ' / ' + fmt(r.kolHigh) + '</div>' : '') + '</td>' +
@@ -1287,10 +1350,12 @@ function viewList(v){
         : '<tr><td colspan="13"><div class="empty">Không có combo nào' + (L.all.length ? ' khớp bộ lọc' : '. Tính combo ở tab “Tính combo” rồi bấm Lưu.') + '</div></td></tr>') + '</tbody></table></div>' +
     '<div class="clist" style="padding:12px">' + (f.length ? f.map(function(x){ var c = x.c, r = x.r; return '<div class="citem" data-id="' + c.id + '"><div class="row" style="align-items:flex-start;flex-wrap:nowrap"><input type="checkbox" data-sel' + (SEL.has(c.id) ? ' checked' : '') + ' style="margin-top:4px"><div style="flex:1;min-width:0"><div class="ct">' + esc(c.ten) + '</div><div class="small muted">#' + (x.i + 1) + ' · ' + esc(fmtDate(c.ngay)) + ' · ' + esc(r.K.ten) + '</div></div>' + statusChip(r.status) + '</div>' +
       '<div class="cm"><div>Giá đề xuất<b>' + fmt(c.gia) + '</b></div><div>% LN ròng<b>' + fmtP(r.pct) + '</b></div><div>Giá KTT đề xuất<b>' + fmt(r.giaKTT) + '</b></div></div>' + (r.status === 'Thiếu dữ liệu' ? '<div class="small" style="color:var(--warn);margin-top:6px">' + esc(ghiChu(r)) + '</div>' : '') +
-      '<div class="ca"><button class="btn sm" data-a="open">' + ic('edit') + 'Mở</button><button class="btn sm" data-a="cp1">' + ic('copy') + 'Copy KQ sàn</button><button class="btn sm ghost" data-a="dup">Nhân bản</button><button class="btn sm ghost danger" data-a="del">Xoá</button>' + sentChip(c, r) + '</div></div>'; }).join('') : '<div class="empty">Không có combo nào.</div>') + '</div></div>';
+      '<div class="ca"><button class="btn sm" data-a="open">' + ic('edit') + 'Mở</button><button class="btn sm" data-a="cp1">' + ic('copy') + 'Copy KQ sàn</button><button class="btn sm ghost" data-a="dup">Nhân bản</button><button class="btn sm ghost danger" data-a="del">Xoá</button>' + sentChip(c, r) + '</div></div>'; }).join('') : '<div class="empty">Không có combo nào' + (L.all.length ? ' khớp bộ lọc. Bấm “Xoá bộ lọc” để xem tất cả.' : '. Tính combo ở tab “Tính combo” rồi bấm Lưu.') + '</div>') + '</div>';
+  }
+  body();
 
-  v.oninput = function(e){ var t = e.target; if (t.dataset.l){ lf[t.dataset.l] = t.value; saveSoon(); if (t.dataset.l === 'q'){ clearTimeout(viewList._t); viewList._t = setTimeout(function(){ var pos = t.selectionStart; viewList(v); var i = $('[data-l="q"]'); if (i){ i.focus(); try { i.setSelectionRange(pos, pos); } catch (er){} } }, 250); } else viewList(v); } };
-  v.onchange = function(e){ var t = e.target; if ('sel' in t.dataset){ var id = t.closest('[data-id]').dataset.id; if (t.checked) SEL.add(id); else SEL.delete(id); viewList(v); } else if (t.dataset.a === 'selall'){ f.forEach(function(x){ if (t.checked) SEL.add(x.c.id); else SEL.delete(x.c.id); }); viewList(v); } };
+  v.oninput = function(e){ var t = e.target; if (t.dataset.l){ lf[t.dataset.l] = t.value; saveSoon(); if (t.dataset.l === 'q'){ clearTimeout(viewList._t); viewList._t = setTimeout(body, 150); } else viewList(v); } };
+  v.onchange = function(e){ var t = e.target; if ('sel' in t.dataset){ var id = t.closest('[data-id]').dataset.id; if (t.checked) SEL.add(id); else SEL.delete(id); body(); } else if (t.dataset.a === 'selall'){ f.forEach(function(x){ if (t.checked) SEL.add(x.c.id); else SEL.delete(x.c.id); }); body(); } };
   v.onclick = function(e){
     var sb = e.target.closest('[data-lst] button'); if (sb){ lf.st = sb.dataset.v; saveSoon(); viewList(v); return; }
     if (e.target.closest('input[type=checkbox]')) return;
@@ -1306,8 +1371,9 @@ function viewList(v){
     else if (a === 'cpvhs'){ if (!targetList.length) return toast('Không có combo nào', 'bad'); copyRich(htmlVHS(targetList), textVHS(targetList)).then(function(ok){ toast(ok ? 'Đã copy ' + targetList.length + ' combo – dán vào email/Zalo gửi vận hành sàn' : 'Không copy được', ok ? 'ok' : 'bad'); }); markSent(targetList); viewList(v); }
     else if (a === 'cpgd'){ if (!targetList.length) return toast('Không có combo nào', 'bad'); copyRich(htmlGDList(targetList), textGDList(targetList)).then(function(ok){ toast(ok ? 'Đã copy báo cáo ' + targetList.length + ' combo cho giám đốc' : 'Không copy được', ok ? 'ok' : 'bad'); }); }
     else if (a === 'xlsx'){ if (!targetList.length) return toast('Không có combo nào', 'bad'); exportCombos(targetList); }
-    else if (a === 'clrsel'){ SEL.clear(); viewList(v); }
-    else if (a === 'new'){ if (isDirty() && !confirm('Combo đang soạn có thay đổi chưa lưu. Bỏ và tạo combo mới?')) return; S.draft = withKeys(newCombo()); go('combo'); }
+    else if (a === 'clrsel'){ SEL.clear(); body(); }
+    else if (a === 'clrf'){ lf.q = ''; lf.st = 'all'; lf.m = ''; saveSoon(); viewList(v); }
+    else if (a === 'new'){ if (!flushDraft()) return; S.draft = withKeys(newCombo()); go('combo'); }
   };
 }
 function textGDList(list){
@@ -1362,7 +1428,7 @@ function viewData(v){
     $('#dt').innerHTML = '<table class="t"><thead><tr><th>Mã</th><th>Tên hàng</th><th>ĐVT</th><th>Phân loại</th><th>Loại xốp</th><th class="n" style="min-width:130px">Giá nhập (gồm VAT)</th><th class="n">Chưa VAT</th><th>Mã khác</th><th></th></tr></thead><tbody>' +
       rows.slice(0, 600).map(function(p){ return '<tr data-ma="' + esc(p.ma) + '"><td><b>' + esc(p.ma) + '</b></td><td class="wrap">' + esc(p.ten) + '</td><td>' + esc(p.dvt) + '</td><td>' + esc(p.pl) + '</td><td>' + esc(p.xop) + '</td>' +
         '<td class="n"><input class="inp num" inputmode="decimal" data-price value="' + moneyVal(p.gia) + '" style="min-height:34px;padding:5px 8px;' + (p.gia > 0 ? '' : 'border-color:var(--bad)') + '" placeholder="Thiếu giá"></td><td class="n" data-nv>' + (p.gia > 0 ? fmt2(p.gia / (1 + S.params.vatVao)) : '') + '</td><td class="small muted">' + esc(p.alias || '') + '</td><td><button class="btn icon sm ghost" data-a="editp" title="Sửa">' + ic('edit') + '</button></td></tr>'; }).join('') +
-      (rows.length ? '' : '<tr><td colspan="9"><div class="empty">Không có sản phẩm. Bấm “Nhập từ file Excel” để nạp danh mục & giá.</div></td></tr>') + '</tbody></table>';
+      (rows.length ? '' : '<tr><td colspan="9"><div class="empty">' + (S.products.length ? 'Không có sản phẩm khớp bộ lọc.' : 'Chưa có dữ liệu. Bấm <b>Khôi phục từ file sao lưu</b> (file .json gửi từ máy tính) hoặc <b>Nhập từ file Excel</b> ở phía trên.') + '</div></td></tr>') + '</tbody></table>';
   }
   draw();
   v.oninput = function(e){ var t = e.target;
@@ -1386,8 +1452,8 @@ function viewData(v){
     else if (a === 'reset'){ if (confirm('Khôi phục toàn bộ dữ liệu gốc đi kèm app (danh mục, giá, tham số, combo)? Mọi thay đổi sau đó sẽ bị thay thế. Nên Xuất file sao lưu trước.')){ var th = S.ui.theme; S = migrate(fromSeed()); S.ui.theme = th; rebuildIndex(); save(); go('data'); toast('Đã khôi phục dữ liệu gốc', 'ok'); } }
   };
 }
-function editProduct(p, done){
-  var isNew = !p, x = p ? clone(p) : {ma: '', ten: '', dvt: '', pl: 'Hàng hóa', xop: '', gia: null, alias: ''};
+function editProduct(p, done, init){
+  var isNew = !p, x = p ? clone(p) : Object.assign({ma: '', ten: '', dvt: '', pl: 'Hàng hóa', xop: '', gia: null, alias: ''}, init || {});
   var used = p ? S.combos.filter(function(c){ return c.items.some(function(i){ return prod(i.ma) === p; }); }).length : 0;
   var m = modal({title: isNew ? 'Thêm sản phẩm' : 'Sửa sản phẩm ' + p.ma, body: '<div class="fields">' +
     '<div class="f"><label>Mã hàng hóa</label><input class="inp" id="e-ma" value="' + esc(x.ma) + '"' + (isNew ? '' : ' readonly style="opacity:.7"') + '></div>' +
@@ -1407,7 +1473,7 @@ function editProduct(p, done){
     var t = isNew ? {ma: ma} : p;
     t.ten = m.$('#e-ten').value.trim(); t.dvt = m.$('#e-dvt').value.trim(); t.pl = m.$('#e-pl').value; t.xop = m.$('#e-xop').value; t.gia = numOrNull(m.$('#e-gia').value); t.alias = m.$('#e-al').value.trim();
     if (isNew) S.products.push(t);
-    rebuildIndex(); save(); m.close(); done(); toast('Đã lưu sản phẩm ' + ma, 'ok');
+    rebuildIndex(); save(); m.close(); done(t); toast('Đã lưu sản phẩm ' + ma, 'ok');
   });
 }
 function pastePrices(done){
@@ -1878,8 +1944,9 @@ function viewHelp(v){
 function init(){
   applyTheme(); renderShell(); renderNav(); renderTab();
   setSaveState(STORAGE_OK ? (S.meta.saved ? 'Đã lưu' : '') : 'Không lưu được – dùng sao lưu', !STORAGE_OK);
-  window.addEventListener('beforeunload', function(){ save(); });
-  document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'hidden') save(); });
+  function flushQuiet(){ var d = S.draft; if (d && isDirty() && named(d) && hasContent(d) && !(!d.id && dupOf(d))) upsertDraft(); else save(); }
+  window.addEventListener('beforeunload', flushQuiet);
+  document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'hidden') flushQuiet(); });
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && document.querySelector('link[rel=manifest]')){ navigator.serviceWorker.register('sw.js').catch(function(){}); }
   if (!STORAGE_OK) setTimeout(function(){ toast('Trình duyệt đang chặn lưu dữ liệu. Hãy mở bằng Chrome/Edge/Safari thường (không ẩn danh) hoặc nhớ xuất sao lưu.', 'bad'); }, 600);
 }
