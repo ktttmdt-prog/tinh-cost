@@ -427,6 +427,10 @@ var PL_LIST = ['Hàng hóa', 'Quà tặng', 'Hộp', 'Vật tư/Khác'];
 
 var SEED = (function(){ try { var el = document.getElementById('seed'); var t = el && el.textContent.trim(); return t && t.charAt(0) === '{' ? JSON.parse(t) : null; } catch (e){ return null; } })();
 var STORAGE_OK = (function(){ try { localStorage.setItem('__t', '1'); localStorage.removeItem('__t'); return true; } catch (e){ return false; } })();
+/* Bản có sẵn dữ liệu (file máy tính) và bản web (điện thoại) lưu ở 2 khoá khác nhau để không ghi đè lẫn nhau */
+LS_KEY = SEED ? 'acbt-cost-app-v1' : 'acbt-cost-web-v1';
+var IS_WEB = /^https?:$/.test(location.protocol) && !SEED;
+var SEED_MSG = '';
 
 function blankState(){
   return {v: 1, params: clone(DEF.params), kenh: clone(DEF.kenh), xop: clone(DEF.xop), box: clone(DEF.box), products: [], combos: [],
@@ -438,21 +442,49 @@ function fromSeed(){
     if (SEED.params) Object.assign(b.params, SEED.params);
     ['kenh', 'xop', 'box', 'products', 'combos'].forEach(function(k){ if (Array.isArray(SEED[k]) && SEED[k].length) b[k] = clone(SEED[k]); });
     b.meta.seed = SEED.meta || {};
+    b.meta.seedId = (SEED.meta && SEED.meta.id) || '';
   }
   return b;
+}
+/* Khi app được cập nhật dữ liệu gốc mới: bổ sung mã/giá còn thiếu, KHÔNG ghi đè số bạn đã sửa */
+function mergeSeed(st){
+  var have = new Map(), added = 0, filled = 0;
+  st.products.forEach(function(p){ have.set(up(p.ma), p); });
+  (SEED.products || []).forEach(function(sp){
+    var p = have.get(up(sp.ma));
+    if (!p){ st.products.push(clone(sp)); added++; }
+    else if (!(p.gia > 0) && sp.gia > 0){ p.gia = sp.gia; if (sp.nguon) p.nguon = sp.nguon; filled++; }
+  });
+  if (!st.combos.length && Array.isArray(SEED.combos)) st.combos = clone(SEED.combos);
+  if (SEED.params && st.products.length === added) st.params = Object.assign({}, st.params, SEED.params); // bộ nhớ trắng hoàn toàn → lấy cả tham số gốc
+  if (!st.box.length && Array.isArray(SEED.box)) st.box = clone(SEED.box);
+  st.meta.seedId = (SEED.meta && SEED.meta.id) || '';
+  if (added || filled) SEED_MSG = 'Đã cập nhật danh mục từ dữ liệu gốc mới: thêm ' + added + ' mã, bổ sung giá ' + filled + ' mã.';
+  return st;
 }
 function migrate(st){
   var b = blankState();
   ['params', 'emails', 'ui', 'meta'].forEach(function(k){ st[k] = Object.assign({}, b[k], st[k] || {}); });
   ['kenh', 'xop', 'box', 'products', 'combos'].forEach(function(k){ if (!Array.isArray(st[k])) st[k] = b[k]; });
+  if (!st.kenh.length) st.kenh = clone(SEED && Array.isArray(SEED.kenh) && SEED.kenh.length ? SEED.kenh : DEF.kenh);
+  if (!st.xop.length) st.xop = clone(SEED && Array.isArray(SEED.xop) && SEED.xop.length ? SEED.xop : DEF.xop);
   if (!Array.isArray(st.ui.targets) || !st.ui.targets.length) st.ui.targets = DEF.targets.slice();
   st.combos.forEach(function(c){ if (!c.id) c.id = uid(); if (!c.kenh) c.kenh = 'tiktok'; if (!Array.isArray(c.items)) c.items = []; });
   return st;
 }
 function loadState(){
   var st = null;
-  if (STORAGE_OK){ try { var t = localStorage.getItem(LS_KEY); if (t) st = JSON.parse(t); } catch (e){ st = null; } }
-  return migrate(st || fromSeed());
+  if (STORAGE_OK){
+    try {
+      var t = localStorage.getItem(LS_KEY);
+      if (!t && !SEED && IS_WEB) t = localStorage.getItem('acbt-cost-app-v1'); // bản web cũ dùng khoá chung
+      if (t) st = JSON.parse(t);
+    } catch (e){ st = null; }
+  }
+  if (!st) return migrate(fromSeed());
+  st = migrate(st);
+  if (SEED && (!st.products.length || st.meta.seedId !== ((SEED.meta && SEED.meta.id) || ''))) mergeSeed(st);
+  return st;
 }
 var S = loadState();
 var lastSaveOk = true;
@@ -480,7 +512,7 @@ rebuildIndex();
 /* =========================================================
    3. BỘ MÁY TÍNH (giống công thức file Excel)
    ========================================================= */
-function chan(id){ for (var i = 0; i < S.kenh.length; i++) if (S.kenh[i].id === id) return S.kenh[i]; return S.kenh[0]; }
+function chan(id){ for (var i = 0; i < S.kenh.length; i++) if (S.kenh[i].id === id) return S.kenh[i]; return S.kenh[0] || DEF.kenh[0]; }
 function fctRate(K){ var P = S.params; if (K.fctAuto){ var d = (1 - P.fctVat) * (1 - P.fctCit); return d > 0 ? P.fctCit / d : 0; } return +K.fct || 0; }
 function priceOf(ma){ var p = prod(ma); return p && p.gia > 0 ? p.gia : null; }
 function theCaoGia(){ var g = priceOf(S.params.theCaoMa); return g != null ? g : (+S.params.theCaoGia || 0); }
@@ -631,7 +663,7 @@ function openPicker(o){
   }
   function pick(i){ var p = shown[i]; if (!p) return; m.close(); o.onPick(p); }
   m.$('#pl').addEventListener('click', function(e){
-    if (e.target.closest('[data-godata]')){ m.close(); go('data'); return; }
+    if (e.target.closest('[data-godata]')){ m.close(); if (IS_WEB) checkRemoteData(true); else go('data'); return; }
     if (e.target.closest('[data-newp]')){
       var raw = m.$('#pq').value.trim(), init = /^[A-Za-z]{2,}[-\w]*\d[\w-]*$/.test(raw) ? {ma: raw.toUpperCase()} : {ten: raw};
       if (mode === 'box') init.pl = 'Hộp';
@@ -751,7 +783,7 @@ function viewCombo(v){
   v.innerHTML =
     '<div class="page-h"><div><h1>' + (d.id ? 'Sửa combo đã lưu' : 'Tính giá cost combo') + '</h1><p id="dirty">' + esc(dirtyText()) + '</p></div><div class="spacer"></div>' +
     '<div class="row"><button class="btn" data-a="new">' + ic('file') + 'Combo mới</button><button class="btn" data-a="paste">' + ic('paste') + 'Dán từ email/Excel</button><button class="btn pri" data-a="save">' + ic('save') + 'Lưu combo</button></div></div>' +
-    (S.products.length ? '' : '<div class="note warn row" style="margin-bottom:14px"><span style="flex:1;min-width:200px"><b>App chưa có dữ liệu sản phẩm & giá nhập</b> nên chưa tìm được sản phẩm (thường gặp khi mới cài trên điện thoại). Vào tab Sản phẩm → <b>Khôi phục từ file sao lưu</b> hoặc <b>Nhập từ file Excel</b>.</span><button class="btn sm pri" data-a="godata">Nạp dữ liệu</button></div>') +
+    (S.products.length ? '' : '<div class="note warn row" style="margin-bottom:14px"><span style="flex:1;min-width:200px"><b>App chưa có dữ liệu sản phẩm & giá nhập</b> nên chưa tìm được sản phẩm. ' + (IS_WEB ? 'Bấm <b>Nạp dữ liệu</b> và nhập <b>mã bảo vệ</b> (dữ liệu được xuất từ app trên máy tính).' : 'Vào tab Sản phẩm → <b>Khôi phục từ file sao lưu</b> hoặc <b>Nhập từ file Excel</b>.') + '</span><button class="btn sm pri" data-a="godata">Nạp dữ liệu</button></div>') +
     '<div class="grid2"><div class="stack">' +
       '<div class="card"><div class="card-h"><h2 class="grow">Thông tin combo</h2></div><div class="card-b"><div class="fields">' +
         '<div class="f full"><label for="f-ten">Tên combo</label><input id="f-ten" class="inp" data-f="ten" value="' + esc(d.ten) + '" placeholder="VD: COMBO 20 chân gà rút xương PL1" autocomplete="off"><div id="nsug">' + nameSugHTML(d) + '</div></div>' +
@@ -813,7 +845,7 @@ function viewCombo(v){
     else if (a === 'paste') openPaste();
     else if (a === 'save') saveDraft();
     else if (a === 'new'){ if (!flushDraft()) return; S.draft = withKeys(newCombo()); saveSoon(); renderTab(); setTimeout(function(){ var i = $('#f-ten'); if (i) i.focus(); }, 30); }
-    else if (a === 'godata') go('data');
+    else if (a === 'godata'){ if (IS_WEB) checkRemoteData(true); else go('data'); }
     else if (a === 'tores'){ var el = $('#cres'); if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
     else resultAction(a, cleanCombo(d), calc(d), false);
   };
@@ -1419,7 +1451,7 @@ function viewData(v){
   var seedInfo = S.meta.importedAt ? 'Nhập từ Excel lúc ' + S.meta.importedAt + (S.meta.importFile ? ' (' + S.meta.importFile + ')' : '') : (S.meta.seed && S.meta.seed.source ? 'Dữ liệu gốc: ' + S.meta.seed.source : '');
   v.innerHTML = '<div class="page-h"><div><h1>Sản phẩm & giá nhập</h1><p>' + S.products.length + ' mã · ' + miss + ' mã thiếu giá' + (seedInfo ? ' · ' + esc(seedInfo) : '') + '</p></div><div class="spacer"></div>' +
     '<div class="row"><button class="btn pri" data-a="imx">' + ic('upload') + 'Nhập từ file Excel</button><button class="btn" data-a="pprice">' + ic('paste') + 'Dán bảng giá</button><button class="btn" data-a="addp">' + ic('plus') + 'Thêm SP</button><button class="btn" data-a="xlsx">' + ic('download') + 'Xuất Excel</button></div></div>' +
-    '<div class="card" style="margin-bottom:16px"><div class="card-h"><h2 class="grow">Sao lưu & chuyển dữ liệu sang máy khác</h2></div><div class="card-b"><div class="row"><button class="btn" data-a="bk">' + ic('download') + 'Xuất file sao lưu (.json)</button><button class="btn" data-a="rs">' + ic('upload') + 'Khôi phục từ file sao lưu</button>' + (SEED ? '<button class="btn ghost danger" data-a="reset">Khôi phục dữ liệu gốc</button>' : '') + '</div><p class="hint">Dữ liệu chỉ lưu trong trình duyệt của máy này. Muốn dùng trên điện thoại/máy khác: Xuất file sao lưu → gửi qua Zalo/Email/USB → mở app trên máy kia → Khôi phục. Nên xuất sao lưu định kỳ.' + (STORAGE_OK ? '' : ' <b style="color:var(--bad)">Trình duyệt này đang chặn lưu dữ liệu – mọi thay đổi sẽ mất khi đóng trang!</b>') + '</p></div></div>' +
+    '<div class="card" style="margin-bottom:16px"><div class="card-h"><h2 class="grow">Sao lưu & chuyển dữ liệu sang máy khác</h2></div><div class="card-b"><div class="row">' + (IS_WEB ? '<button class="btn pri" data-a="encin">' + ic('download') + 'Tải dữ liệu từ máy tính (có mã)</button>' : '<button class="btn pri" data-a="encx">' + ic('upload') + 'Xuất dữ liệu cho điện thoại (có mã bảo vệ)</button>') + '<button class="btn" data-a="bk">' + ic('download') + 'Xuất file sao lưu (.json)</button><button class="btn" data-a="rs">' + ic('upload') + 'Khôi phục từ file sao lưu</button>' + (SEED ? '<button class="btn ghost danger" data-a="reset">Khôi phục dữ liệu gốc</button>' : '') + '</div><p class="hint">Dữ liệu chỉ lưu trong trình duyệt của máy này. Muốn dùng trên điện thoại/máy khác: Xuất file sao lưu → gửi qua Zalo/Email/USB → mở app trên máy kia → Khôi phục. Nên xuất sao lưu định kỳ.' + (STORAGE_OK ? '' : ' <b style="color:var(--bad)">Trình duyệt này đang chặn lưu dữ liệu – mọi thay đổi sẽ mất khi đóng trang!</b>') + '</p></div></div>' +
     '<div class="card"><div class="card-h"><div class="filters" style="flex:1"><input class="inp search" data-d="q" value="' + esc(df.q) + '" placeholder="Tìm mã, tên, mã khác…"><select class="inp" data-d="pl"><option value="">Mọi phân loại</option>' + PL_LIST.map(function(x){ return '<option' + (df.pl === x ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select><label class="row small"><input type="checkbox" data-d="miss"' + (df.miss ? ' checked' : '') + '> Chỉ mã thiếu giá</label></div></div>' +
     '<div class="tbl-wrap tbl-b" id="dt"></div></div>';
   function draw(){
@@ -1427,13 +1459,13 @@ function viewData(v){
     var rows = S.products.filter(function(p){ return (!q || norm(p.ma + ' ' + p.ten + ' ' + (p.alias || '')).indexOf(q) >= 0) && (!df.pl || p.pl === df.pl) && (!df.miss || !(p.gia > 0)); });
     $('#dt').innerHTML = '<table class="t"><thead><tr><th>Mã</th><th>Tên hàng</th><th>ĐVT</th><th>Phân loại</th><th>Loại xốp</th><th class="n" style="min-width:130px">Giá nhập (gồm VAT)</th><th class="n">Chưa VAT</th><th>Mã khác</th><th></th></tr></thead><tbody>' +
       rows.slice(0, 600).map(function(p){ return '<tr data-ma="' + esc(p.ma) + '"><td><b>' + esc(p.ma) + '</b></td><td class="wrap">' + esc(p.ten) + '</td><td>' + esc(p.dvt) + '</td><td>' + esc(p.pl) + '</td><td>' + esc(p.xop) + '</td>' +
-        '<td class="n"><input class="inp num" inputmode="decimal" data-price value="' + moneyVal(p.gia) + '" style="min-height:34px;padding:5px 8px;' + (p.gia > 0 ? '' : 'border-color:var(--bad)') + '" placeholder="Thiếu giá"></td><td class="n" data-nv>' + (p.gia > 0 ? fmt2(p.gia / (1 + S.params.vatVao)) : '') + '</td><td class="small muted">' + esc(p.alias || '') + '</td><td><button class="btn icon sm ghost" data-a="editp" title="Sửa">' + ic('edit') + '</button></td></tr>'; }).join('') +
+        '<td class="n"><input class="inp num" inputmode="decimal" data-price value="' + moneyVal(p.gia) + '" style="min-height:34px;padding:5px 8px;' + (p.gia > 0 ? '' : 'border-color:var(--bad)') + '" placeholder="Thiếu giá">' + (p.nguon && p.gia > 0 ? '<div class="faint" style="font-size:11px;white-space:normal;text-align:left;margin-top:2px" title="' + esc(p.nguon) + '">' + esc(p.nguon.length > 40 ? p.nguon.slice(0, 40) + '…' : p.nguon) + '</div>' : '') + '</td><td class="n" data-nv>' + (p.gia > 0 ? fmt2(p.gia / (1 + S.params.vatVao)) : '') + '</td><td class="small muted">' + esc(p.alias || '') + '</td><td><button class="btn icon sm ghost" data-a="editp" title="Sửa">' + ic('edit') + '</button></td></tr>'; }).join('') +
       (rows.length ? '' : '<tr><td colspan="9"><div class="empty">' + (S.products.length ? 'Không có sản phẩm khớp bộ lọc.' : 'Chưa có dữ liệu. Bấm <b>Khôi phục từ file sao lưu</b> (file .json gửi từ máy tính) hoặc <b>Nhập từ file Excel</b> ở phía trên.') + '</div></td></tr>') + '</tbody></table>';
   }
   draw();
   v.oninput = function(e){ var t = e.target;
     if (t.dataset.d){ df[t.dataset.d] = t.type === 'checkbox' ? t.checked : t.value; saveSoon(); draw(); return; }
-    if ('price' in t.dataset){ var p = prod(t.closest('[data-ma]').dataset.ma); if (!p) return; p.gia = numOrNull(t.value); t.style.borderColor = p.gia > 0 ? '' : 'var(--bad)'; var nv = t.closest('tr').querySelector('[data-nv]'); if (nv) nv.textContent = p.gia > 0 ? fmt2(p.gia / (1 + S.params.vatVao)) : ''; S.meta.priceEdited = nowText(); saveSoon(); renderNav(); }
+    if ('price' in t.dataset){ var p = prod(t.closest('[data-ma]').dataset.ma); if (!p) return; p.gia = numOrNull(t.value); p.nguon = 'Nhập tay ' + fmtDate(today()); t.style.borderColor = p.gia > 0 ? '' : 'var(--bad)'; var nv = t.closest('tr').querySelector('[data-nv]'); if (nv) nv.textContent = p.gia > 0 ? fmt2(p.gia / (1 + S.params.vatVao)) : ''; S.meta.priceEdited = nowText(); saveSoon(); renderNav(); }
   };
   v.onchange = function(e){ var t = e.target; if ('price' in t.dataset) t.value = moneyVal(numOrNull(t.value)); };
   v.onclick = function(e){
@@ -1448,6 +1480,8 @@ function viewData(v){
       download('DanhMucGiaNhap_' + today() + '.xlsx', xlsxBlob([{name: 'GIÁ NHẬP', rows: rows, cols: [6, 13, 52, 8, 12, 14, 16, 14, 20], freeze: 3}]));
     }
     else if (a === 'bk') exportBackup();
+    else if (a === 'encx') exportEncrypted();
+    else if (a === 'encin') checkRemoteData(true);
     else if (a === 'rs') pickFile('.json,application/json', restoreBackup);
     else if (a === 'reset'){ if (confirm('Khôi phục toàn bộ dữ liệu gốc đi kèm app (danh mục, giá, tham số, combo)? Mọi thay đổi sau đó sẽ bị thay thế. Nên Xuất file sao lưu trước.')){ var th = S.ui.theme; S = migrate(fromSeed()); S.ui.theme = th; rebuildIndex(); save(); go('data'); toast('Đã khôi phục dữ liệu gốc', 'ok'); } }
   };
@@ -1470,7 +1504,8 @@ function editProduct(p, done, init){
     if (b.dataset.a === 'del'){ if (confirm('Xoá sản phẩm ' + p.ma + '?' + (used ? ' Sản phẩm đang dùng trong ' + used + ' combo – các combo đó sẽ báo “Mã không có trong danh mục”.' : ''))){ S.products = S.products.filter(function(q){ return q !== p; }); rebuildIndex(); save(); m.close(); done(); toast('Đã xoá sản phẩm'); } return; }
     var ma = m.$('#e-ma').value.trim(); if (!ma) return toast('Nhập mã hàng', 'bad');
     if (isNew && PIDX.has(up(ma))) return toast('Mã ' + ma + ' đã có trong danh mục', 'bad');
-    var t = isNew ? {ma: ma} : p;
+    var t = isNew ? {ma: ma} : p, oldG = isNew ? null : p.gia, newG = numOrNull(m.$('#e-gia').value);
+    if (isNew || oldG !== newG) t.nguon = newG > 0 ? 'Nhập tay ' + fmtDate(today()) : '';
     t.ten = m.$('#e-ten').value.trim(); t.dvt = m.$('#e-dvt').value.trim(); t.pl = m.$('#e-pl').value; t.xop = m.$('#e-xop').value; t.gia = numOrNull(m.$('#e-gia').value); t.alias = m.$('#e-al').value.trim();
     if (isNew) S.products.push(t);
     rebuildIndex(); save(); m.close(); done(t); toast('Đã lưu sản phẩm ' + ma, 'ok');
@@ -1505,6 +1540,85 @@ function pastePrices(done){
       S.meta.priceEdited = nowText(); save(); m.close(); done(); toast('Đã cập nhật giá ' + n + ' mã', 'ok');
     }
   });
+}
+/* ---------- Dữ liệu mã hoá cho bản điện thoại (AES-GCM 256, khoá từ mã bảo vệ qua PBKDF2) ---------- */
+var ENC_FILE = 'du-lieu.json';
+function b64e(u8){ var s = ''; for (var i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+function b64d(s){ var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+function deriveKey(pass, salt, iter){
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(String(pass).normalize('NFC')), 'PBKDF2', false, ['deriveKey']).then(function(k){
+    return crypto.subtle.deriveKey({name: 'PBKDF2', salt: salt, iterations: iter, hash: 'SHA-256'}, k, {name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
+  });
+}
+function encryptData(obj, pass){
+  var salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12)), iter = 250000;
+  return deriveKey(pass, salt, iter).then(function(key){ return crypto.subtle.encrypt({name: 'AES-GCM', iv: iv}, key, new TextEncoder().encode(JSON.stringify(obj))); })
+    .then(function(ct){ return {app: 'tinh-cost-combo', kind: 'enc-data', v: 1, created: new Date().toISOString(), info: {products: obj.products.length, combos: obj.combos.length}, iter: iter, salt: b64e(salt), iv: b64e(iv), ct: b64e(new Uint8Array(ct))}; });
+}
+function decryptData(f, pass){
+  return deriveKey(pass, b64d(f.salt), f.iter).then(function(key){ return crypto.subtle.decrypt({name: 'AES-GCM', iv: b64d(f.iv)}, key, b64d(f.ct)); })
+    .then(function(pt){ return JSON.parse(new TextDecoder().decode(pt)); });
+}
+function exportEncrypted(){
+  if (!window.crypto || !crypto.subtle) return toast('Trình duyệt này không hỗ trợ mã hoá. Hãy mở app bằng Chrome hoặc Edge.', 'bad');
+  var m = modal({title: 'Xuất dữ liệu cho điện thoại', sticky: true, body:
+    '<p style="margin-top:0">Tạo file <b>' + ENC_FILE + '</b> chứa toàn bộ danh mục, giá nhập, tham số và combo (' + S.products.length + ' mã · ' + S.combos.length + ' combo), <b>được mã hoá</b> bằng mã bảo vệ do bạn đặt.</p>' +
+    '<ol class="small" style="padding-left:18px;margin:0 0 12px"><li>Đặt mã bảo vệ (ít nhất 6 ký tự, nên có cả chữ và số) rồi bấm <b>Tạo file</b>. File được lưu vào thư mục Tải về (Downloads).</li><li>Tải file đó lên kho <b>tinh-cost</b> trên GitHub (cùng chỗ với index.html).</li><li>Mở app trên điện thoại → nhập đúng mã này một lần → app có đủ dữ liệu, dùng offline.</li></ol>' +
+    '<div class="fields"><div class="f"><label>Mã bảo vệ</label><input class="inp" type="password" id="ep1" autocomplete="new-password"></div><div class="f"><label>Nhập lại mã</label><input class="inp" type="password" id="ep2" autocomplete="new-password"></div></div>' +
+    '<p class="hint">Mã không được lưu ở đâu cả – hãy ghi nhớ. Quên mã thì chỉ cần tạo lại file với mã mới. Người không có mã chỉ thấy dữ liệu đã mã hoá.</p>',
+    foot: '<button class="btn" data-x>Huỷ</button><button class="btn pri" data-a="go">' + ic('download') + 'Tạo file</button>'});
+  setTimeout(function(){ m.$('#ep1').focus(); }, 30);
+  m.el.addEventListener('click', function(e){
+    if (!e.target.closest('[data-a="go"]')) return;
+    var p1 = m.$('#ep1').value, p2 = m.$('#ep2').value;
+    if (p1.length < 6) return toast('Mã bảo vệ cần ít nhất 6 ký tự', 'bad');
+    if (p1 !== p2) return toast('Hai lần nhập mã không giống nhau', 'bad');
+    var data = {params: S.params, kenh: S.kenh, xop: S.xop, box: S.box, products: S.products, combos: S.combos, emails: S.emails, targets: S.ui.targets, exported: new Date().toISOString()};
+    encryptData(data, p1).then(function(f){
+      download(ENC_FILE, new Blob([JSON.stringify(f)], {type: 'application/json'}));
+      S.meta.encExported = nowText(); saveSoon(); m.close();
+      toast('Đã tạo file ' + ENC_FILE + ' trong thư mục Tải về – tải file này lên GitHub', 'ok');
+    }).catch(function(er){ toast('Không mã hoá được: ' + er.message, 'bad'); });
+  });
+}
+function applyRemote(d, f, replaceCombos){
+  S.params = Object.assign({}, S.params, d.params || {});
+  ['kenh', 'xop', 'box', 'products'].forEach(function(k){ if (Array.isArray(d[k]) && d[k].length) S[k] = d[k]; });
+  if (d.emails) S.emails = Object.assign({}, S.emails, d.emails);
+  if (Array.isArray(d.targets) && d.targets.length) S.ui.targets = d.targets;
+  var added = 0, upd = 0;
+  if (replaceCombos) { S.combos = d.combos || []; added = S.combos.length; }
+  else (d.combos || []).forEach(function(c){
+    var i = -1; S.combos.forEach(function(x, j){ if (x.id === c.id) i = j; });
+    if (i < 0){ S.combos.push(c); added++; } else if ((c.updated || 0) > (S.combos[i].updated || 0)){ S.combos[i] = c; upd++; }
+  });
+  S.meta.encLoaded = f.created; S.meta.importedAt = nowText(); S.meta.importFile = 'Dữ liệu từ máy tính (' + new Date(f.created).toLocaleDateString('vi-VN') + ')';
+  rebuildIndex(); save(); renderNav(); renderTab();
+  toast('Đã nạp ' + S.products.length + ' mã hàng · ' + added + ' combo mới' + (upd ? ' · cập nhật ' + upd + ' combo' : ''), 'ok');
+}
+function unlockRemote(f){
+  var first = !S.products.length;
+  var m = modal({title: first ? 'Mở dữ liệu của bạn' : 'Có dữ liệu mới từ máy tính', sticky: !first, body:
+    '<p style="margin-top:0">' + (first ? 'App trên điện thoại chưa có dữ liệu. ' : '') + 'Máy chủ có dữ liệu tạo lúc <b>' + new Date(f.created).toLocaleString('vi-VN') + '</b> (' + (f.info ? f.info.products + ' mã hàng · ' + f.info.combos + ' combo' : '') + '). Nhập <b>mã bảo vệ</b> bạn đã đặt khi xuất dữ liệu trên máy tính.</p>' +
+    '<div class="f"><label>Mã bảo vệ</label><input class="inp" type="password" id="up1" autocomplete="current-password"></div>' +
+    (first ? '' : '<label class="row small" style="margin-top:10px"><input type="checkbox" id="urep"> Thay toàn bộ danh sách combo trên điện thoại bằng danh sách từ máy tính (mặc định: gộp, giữ combo đã tạo trên điện thoại)</label>') +
+    '<p class="hint">Danh mục, giá nhập và tham số sẽ được thay bằng bản từ máy tính.</p>',
+    foot: '<button class="btn" data-x>Để sau</button><button class="btn pri" data-a="go">' + ic('check') + 'Mở dữ liệu</button>'});
+  setTimeout(function(){ var i = m.$('#up1'); if (i) i.focus(); }, 30);
+  function go(){
+    var btn = m.$('[data-a="go"]'); btn.disabled = true; btn.textContent = 'Đang mở…';
+    decryptData(f, m.$('#up1').value).then(function(d){ var rep = m.$('#urep') && m.$('#urep').checked; m.close(); applyRemote(d, f, rep || first); })
+      .catch(function(){ btn.disabled = false; btn.innerHTML = ic('check') + 'Mở dữ liệu'; toast('Sai mã bảo vệ – thử lại', 'bad'); });
+  }
+  m.el.addEventListener('click', function(e){ if (e.target.closest('[data-a="go"]')) go(); });
+  m.$('#up1').addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
+}
+function checkRemoteData(manual){
+  if (!/^https?:$/.test(location.protocol)) { if (manual) toast('Chỉ dùng được trên bản web (điện thoại)', 'bad'); return; }
+  fetch(ENC_FILE + '?t=' + Date.now(), {cache: 'no-store'}).then(function(r){ if (!r.ok) throw new Error('404'); return r.json(); }).then(function(f){
+    if (!f || f.kind !== 'enc-data') throw new Error('bad');
+    if (manual || !S.products.length || (S.meta.encLoaded || '') < f.created) unlockRemote(f);
+  }).catch(function(){ if (manual) toast('Chưa có file ' + ENC_FILE + ' trên máy chủ (hoặc đang không có mạng)', 'bad'); });
 }
 function exportBackup(){
   var data = {app: 'tinh-cost-combo', ver: APP_VER, exported: new Date().toISOString(), data: {params: S.params, kenh: S.kenh, xop: S.xop, box: S.box, products: S.products, combos: S.combos, emails: S.emails, targets: S.ui.targets, meta: S.meta}};
@@ -1592,6 +1706,7 @@ function mapWorkbook(wbr){
   var need = ['DANH MỤC', 'GIÁ NHẬP', 'THAM SỐ', 'CHI TIẾT COMBO', 'KẾT QUẢ COMBO', 'Vận hành sàn yêu cầu'];
   return Promise.all(need.map(function(n){ return wbr.sheet(n); })).then(function(sh){
     var dm = sh[0], gn = sh[1], ts = sh[2], ct = sh[3], kq = sh[4], vh = sh[5];
+    if (!dm && !gn) return mapPriceList(wbr, out);
     need.forEach(function(n, i){ if (sh[i]) out.found.push(n); else out.warn.push('Không thấy sheet “' + n + '”'); });
     var map = new Map();
     if (dm){
@@ -1650,6 +1765,37 @@ function mapWorkbook(wbr){
   });
 }
 function codeOf(s){ s = str(s); var i = s.indexOf(' - '); return (i > 0 ? s.slice(0, i) : s).trim(); }
+/* File bảng giá nhập riêng (VD "BẢNG GIÁ NHẬP SẢN PHẨM.xlsx"): sheet có cột Mã hàng + cột Giá nhập */
+function guessPl(ma, ten, loai){ var n = norm(ten + ' ' + (loai || '')); if (/^QT/i.test(ma)) return 'Quà tặng'; if (n.indexOf('hop carton') >= 0) return 'Hộp'; if (/^(NVL|CCDC|MN|BBN|TCTA|CXH)/i.test(ma)) return 'Vật tư/Khác'; return 'Hàng hóa'; }
+function mapPriceList(wbr, out){
+  out.priceOnly = true;
+  var names = wbr.names.slice(0, 12), i = 0;
+  function next(){
+    if (i >= names.length){ if (!out.products.length) out.warn.push('Không tìm thấy sheet có cột “Mã hàng” và cột “Giá nhập”'); return out; }
+    var name = names[i++];
+    return wbr.sheet(name).then(function(sh){
+      if (!sh) return next();
+      for (var r = 1; r <= 10; r++){
+        var cMa = findCol(sh, r, function(x){ return x.indexOf('ma hang') === 0; });
+        if (!cMa) continue;
+        var cGia = null; for (var c = 59; c >= 0; c--){ var hv = sh.get(colName(c) + r); if (hv != null && /gia nhap/.test(norm(hv))){ cGia = colName(c); break; } }
+        if (!cGia) continue;
+        var cTen = findCol(sh, r, function(x){ return x.indexOf('ten hang') === 0; }), cDvt = findCol(sh, r, function(x){ return x === 'dvt' || x.indexOf('don vi tinh') === 0; }), cLoai = findCol(sh, r, function(x){ return x.indexOf('loai hang') === 0; });
+        var label = 'Bảng giá nhập' + (sh.get(cGia + (r - 1)) ? ' ' + str(sh.get(cGia + (r - 1))) : ''), seen = new Set();
+        for (var rr = r + 1; rr <= sh.maxRow; rr++){
+          var ma = str(sh.get(cMa + rr)); if (!ma || seen.has(up(ma))) continue; seen.add(up(ma));
+          var ten = cTen ? str(sh.get(cTen + rr)) : '', g = num(sh.get(cGia + rr)), note = label;
+          if (g > 0 && g < 50 && g % 1 !== 0){ g = Math.round(g * 1000); note = label + ' (file ghi số thập phân ' + String(g / 1000).replace('.', ',') + ' – đã hiểu là ' + fmt(g) + 'đ, nên kiểm tra)'; }
+          out.products.push({ma: ma, ten: ten, dvt: cDvt ? str(sh.get(cDvt + rr)) : '', pl: guessPl(ma, ten, cLoai ? str(sh.get(cLoai + rr)) : ''), xop: '', gia: g > 0 ? g : null, alias: '', nguon: g > 0 ? note : ''});
+        }
+        out.found.push(name + ' (bảng giá nhập)');
+        return out;
+      }
+      return next();
+    });
+  }
+  return next();
+}
 function mapParams(ts, out){
   var rows = []; for (var r = 1; r <= Math.min(ts.maxRow, 200); r++) rows.push({r: r, a: norm(ts.get('A' + r)), b: ts.get('B' + r), c: ts.get('C' + r), d: ts.get('D' + r), e: ts.get('E' + r)});
   function find(fn, after){ for (var i = 0; i < rows.length; i++){ if ((after == null || rows[i].r > after) && rows[i].a && fn(rows[i].a)) return rows[i]; } return null; }
@@ -1702,7 +1848,7 @@ function importExcelFile(file){
 function showImport(res, fname){
   var cur = new Map(); S.products.forEach(function(p){ cur.set(up(p.ma), p); });
   var changed = [], added = [];
-  res.products.forEach(function(p){ var o = cur.get(up(p.ma)); if (!o) added.push(p); else if ((o.gia || 0) !== (p.gia || 0) && Math.abs((o.gia || 0) - (p.gia || 0)) > 0.005) changed.push({p: p, old: o.gia}); });
+  res.products.forEach(function(p){ var o = cur.get(up(p.ma)); if (!o) added.push(p); else if (p.gia > 0 && Math.abs((o.gia || 0) - p.gia) > 0.005) changed.push({p: p, old: o.gia}); });
   var names = new Set(S.combos.map(function(c){ return c.ten.trim().toLowerCase(); }));
   var newC = res.combos.filter(function(c){ return !names.has(c.ten.trim().toLowerCase()); });
   var withPrice = res.products.filter(function(p){ return p.gia > 0; }).length;
@@ -1710,8 +1856,8 @@ function showImport(res, fname){
     '<p class="small muted" style="margin-top:0">File: <b>' + esc(fname) + '</b> · Đã đọc các sheet: ' + esc(res.found.join(', ')) + (res.warn.length ? '<br><span style="color:var(--warn)">' + esc(res.warn.join(' · ')) + '</span>' : '') + '</p>' +
     '<div class="stack">' +
     '<label class="card" style="display:block;padding:12px 14px"><div class="row"><input type="checkbox" id="i-p"' + (res.products.length ? ' checked' : ' disabled') + '><b>Danh mục & giá nhập</b> – ' + res.products.length + ' mã (' + withPrice + ' có giá) · ' + added.length + ' mã mới · <b>' + changed.length + '</b> mã đổi giá</div>' +
-      '<div class="row small" style="margin:8px 0 0 26px"><label class="row"><input type="radio" name="pm" value="merge" checked> Cập nhật mã trùng + thêm mã mới (giữ mã đang có trong app)</label><label class="row"><input type="radio" name="pm" value="replace"> Thay toàn bộ danh mục</label></div>' +
-      (changed.length ? '<details style="margin:8px 0 0 26px"><summary class="small">Xem ' + changed.length + ' mã đổi giá</summary><div class="tbl-wrap" style="max-height:240px;margin-top:6px"><table class="t"><thead><tr><th>Mã</th><th>Tên</th><th class="n">Giá trong app</th><th class="n">Giá trong file</th></tr></thead><tbody>' + changed.map(function(x){ return '<tr><td><b>' + esc(x.p.ma) + '</b></td><td class="wrap">' + esc(x.p.ten) + '</td><td class="n">' + fmt2(x.old) + '</td><td class="n"><b>' + (x.p.gia ? fmt2(x.p.gia) : 'THIẾU') + '</b></td></tr>'; }).join('') + '</tbody></table></div></details>' : '') + '</label>' +
+      '<div class="row small" style="margin:8px 0 0 26px"><label class="row"><input type="radio" name="pm" value="merge" checked> Cập nhật mã trùng + thêm mã mới (giữ mã đang có trong app; mã nào file không có giá thì giữ giá đang có)</label>' + (res.priceOnly ? '' : '<label class="row"><input type="radio" name="pm" value="replace"> Thay toàn bộ danh mục</label>') + '</div>' +
+      (changed.length ? '<details style="margin:8px 0 0 26px"><summary class="small">Xem ' + changed.length + ' mã đổi / bổ sung giá</summary><div class="tbl-wrap" style="max-height:240px;margin-top:6px"><table class="t"><thead><tr><th>Mã</th><th>Tên</th><th class="n">Giá trong app</th><th class="n">Giá trong file</th></tr></thead><tbody>' + changed.map(function(x){ return '<tr><td><b>' + esc(x.p.ma) + '</b></td><td class="wrap">' + esc(x.p.ten) + '</td><td class="n">' + fmt2(x.old) + '</td><td class="n"><b>' + (x.p.gia ? fmt2(x.p.gia) : 'THIẾU') + '</b></td></tr>'; }).join('') + '</tbody></table></div></details>' : '') + '</label>' +
     '<label class="card" style="display:block;padding:12px 14px"><div class="row"><input type="checkbox" id="i-t"' + (Object.keys(res.params).length ? ' checked' : ' disabled') + '><b>Tham số</b> – thuế, ngưỡng LN, bill, thẻ cào, băng dính, KOL/affiliate' + (res.kenh ? ', ' + res.kenh.length + ' kênh bán' : '') + (res.xop ? ', ' + res.xop.length + ' loại xốp' : '') + (res.box ? ', ' + res.box.length + ' mã hộp' : '') + '</div></label>' +
     '<label class="card" style="display:block;padding:12px 14px"><div class="row"><input type="checkbox" id="i-c"' + (res.combos.length ? '' : ' disabled') + '><b>Combo</b> – ' + res.combos.length + ' combo trong file (' + newC.length + ' combo chưa có trong app)</div>' +
       '<div class="row small" style="margin:8px 0 0 26px"><label class="row"><input type="radio" name="cm" value="new" checked> Chỉ thêm combo chưa có</label><label class="row"><input type="radio" name="cm" value="all"> Ghi đè combo trùng tên + thêm mới</label></div></label>' +
@@ -1723,7 +1869,13 @@ function showImport(res, fname){
     if (doP){
       var mode = m.$('input[name=pm]:checked').value;
       if (mode === 'replace'){ var oldAl = new Map(); S.products.forEach(function(p){ if (p.alias) oldAl.set(up(p.ma), p.alias); }); res.products.forEach(function(p){ if (oldAl.has(up(p.ma))) p.alias = oldAl.get(up(p.ma)); }); S.products = res.products; }
-      else res.products.forEach(function(p){ var o = cur.get(up(p.ma)); if (o){ o.ten = p.ten || o.ten; o.dvt = p.dvt || o.dvt; o.pl = p.pl || o.pl; o.xop = p.xop; o.gia = p.gia; } else S.products.push(p); });
+      else res.products.forEach(function(p){
+        var o = cur.get(up(p.ma));
+        if (o){
+          if (!res.priceOnly){ o.ten = p.ten || o.ten; o.dvt = p.dvt || o.dvt; o.pl = p.pl || o.pl; o.xop = p.xop; }
+          if (p.gia > 0){ o.gia = p.gia; o.nguon = p.nguon || ''; } // file không có giá → giữ giá đang có
+        } else S.products.push(p);
+      });
       rebuildIndex(); msg.push(res.products.length + ' mã hàng');
     }
     if (doT){ Object.assign(S.params, res.params); if (res.kenh) S.kenh = res.kenh; if (res.xop) S.xop = res.xop; if (res.box) S.box = res.box; msg.push('tham số'); }
@@ -1949,8 +2101,10 @@ function init(){
   document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'hidden') flushQuiet(); });
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && document.querySelector('link[rel=manifest]')){ navigator.serviceWorker.register('sw.js').catch(function(){}); }
   if (!STORAGE_OK) setTimeout(function(){ toast('Trình duyệt đang chặn lưu dữ liệu. Hãy mở bằng Chrome/Edge/Safari thường (không ẩn danh) hoặc nhớ xuất sao lưu.', 'bad'); }, 600);
+  if (SEED_MSG){ save(); setTimeout(function(){ toast(SEED_MSG, 'ok'); }, 500); }
+  if (IS_WEB) setTimeout(function(){ checkRemoteData(false); }, 400);
 }
-window.__APP = {get S(){ return S; }, calc: calc, importFile: importExcelFile, exportCombos: exportCombos, suggest: suggest, readWorkbook: readWorkbook, mapWorkbook: mapWorkbook, parsePaste: parsePaste, xlsxBlob: xlsxBlob, rebuildIndex: rebuildIndex, go: go, prod: prod,
+window.__APP = {get S(){ return S; }, calc: calc, importFile: importExcelFile, exportCombos: exportCombos, encryptData: encryptData, decryptData: decryptData, unlockRemote: unlockRemote, suggest: suggest, readWorkbook: readWorkbook, mapWorkbook: mapWorkbook, parsePaste: parsePaste, xlsxBlob: xlsxBlob, rebuildIndex: rebuildIndex, go: go, prod: prod,
   setState: function(st){ S = migrate(st); rebuildIndex(); save(); renderNav(); renderTab(); }};
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
